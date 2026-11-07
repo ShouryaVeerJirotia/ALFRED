@@ -1,8 +1,8 @@
 // ============================================================================
 // ALFRED AI  -  AlfredsFirmware_v2.ino
-// Target : AI Thinker ESP32-CAM (OV2640), Arduino IDE, ESP32 Arduino core 2.0.x / 3.x
-// STATUS : NOT compiled or hardware-tested by the author of this revision.
-//          See AlfredAudit_v2.md for the audit, test checklist and known risks.
+// Target : AI Thinker ESP32-CAM (OV2640), ESP32 Arduino core 3.3.10
+// STATUS : Compiled and flash-verified 2026-11-07. See docs/STATUS.md and
+//          docs/TEST_CHECKLIST.md; runtime behavior still needs hardware checks.
 // ============================================================================
 #include "esp_camera.h"
 #include <WiFi.h>
@@ -147,6 +147,7 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,#orbBox:focus-vi
 .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:6px 0}
 .row input{flex:1;min-width:120px}
 input[type=text],input[type=tel],input[type=password],textarea{background:rgba(5,7,13,.7);border:1px solid var(--line);border-radius:10px;color:var(--fg);font:inherit;padding:10px 12px;width:100%}
+select.settingSelect{flex:1;min-height:44px;background:#05070d;color:var(--fg);border:1px solid var(--line);border-radius:10px;padding:0 10px;font:inherit}
 textarea{height:84px;resize:vertical}
 summary{cursor:pointer;font-size:.8rem;letter-spacing:.14em;text-transform:uppercase;color:var(--mut)}
 #log{max-height:130px;overflow-y:auto;font:12px/1.5 ui-monospace,Menlo,Consolas,monospace;color:#9fdcec;margin-top:8px}
@@ -236,7 +237,7 @@ nav button[aria-current=page]{color:var(--c);box-shadow:inset 0 2px var(--c)}
 <section class="view" id="v-settings">
  <h2>Cloud assistant &amp; memory</h2>
  <div class="card">
-  <p class="note">ALFRED-Showcase is pre-connected. Create or sign in to the same account on each device to use cloud chat and private saved memory. Add your own Gemini key below, or ask the project owner to configure shared keys in Supabase.</p>
+  <p class="note">ALFRED-Showcase is pre-connected. Create or sign in to the same account on each device to use cloud chat and private saved memory. Shared Gemini keys rotate on the server; your own keys can be added as a fallback.</p>
   <div class="row"><input type="url" id="sbUrl" placeholder="Supabase project URL" aria-label="Supabase project URL" autocomplete="url"></div>
   <div class="row"><input type="password" id="sbAnon" placeholder="Supabase publishable or anon key" aria-label="Supabase public key" autocomplete="off"></div>
   <div class="row"><input type="email" id="sbEmail" placeholder="Account email" aria-label="Account email" autocomplete="username"></div>
@@ -249,13 +250,15 @@ nav button[aria-current=page]{color:var(--c);box-shadow:inset 0 2px var(--c)}
  <h2>Gemini API keys</h2>
  <div class="card">
   <textarea id="keysArea" placeholder="Paste Gemini API key(s), one per line" aria-label="Gemini API keys" autocomplete="off" spellcheck="false"></textarea>
-  <label class="chk"><input type="checkbox" id="remember" checked> Remember on this browser</label>
-  <p class="note">Your own keys are kept in this browser profile only when “Remember” is checked. In Cloud mode, keys are sent over HTTPS to your signed-in ALFRED function for this request and are not saved by ALFRED's server. For shared keys, configure Gemini keys as Supabase server secrets. Never commit a key to firmware or GitHub.</p>
+  <label class="chk"><input type="checkbox" id="remember"> Keep keys in this browser</label>
+  <p class="note">When enabled, your own keys are saved in this browser profile’s local storage; ALFRED does not encrypt them. In Cloud mode, keys are sent over HTTPS for that request and are not saved by ALFRED's server. Shared rotation is handled by Supabase. Never commit a key to firmware or GitHub.</p>
   <div class="row"><button class="btn" id="saveKeys">Save and engage</button><button class="btn warn" id="clearKeys">Flush keys</button></div>
   <div class="sub" id="keysInfo">No key loaded.</div>
  </div>
  <h2>Behaviour</h2>
  <div class="card">
+  <div class="row"><label for="voiceLanguage" class="sub">Voice language</label><select id="voiceLanguage" class="settingSelect" aria-label="Voice language"><option value="auto">Auto (Hindi/English)</option><option value="en-IN">English (India)</option><option value="hi-IN">Hindi</option></select></div>
+  <p class="note">Auto follows Hindi device locales and uses English (India) for other locales. Speech support and installed voices vary by browser and phone. Text chat can still reply in the language you use.</p>
   <label class="chk"><input type="checkbox" id="voiceChk" checked> Speak replies aloud</label>
   <label class="chk"><input type="checkbox" id="visChk" checked> Attach a camera frame when a request sounds visual</label>
   <label class="chk"><input type="checkbox" id="srchChk"> Use Google Search for live answers (may need a paid Gemini plan)</label>
@@ -290,7 +293,7 @@ const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
 const ls={g:k=>{try{return localStorage.getItem(k);}catch(e){return null;}},s:(k,v)=>{try{localStorage.setItem(k,v);}catch(e){}},d:k=>{try{localStorage.removeItem(k);}catch(e){}}};
 const br=f=>{const a=window.AlfredAndroid;return a&&typeof a[f]==='function'?a:null;};
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
-let keys=[],ki=0,hist=[],busy=false,reqId=0,voiceOn=true,autoVis=true,speaking=false,spTok=0,greeted=false,cur='assistant',last={};
+let keys=[],ki=0,hist=[],busy=false,reqId=0,voiceOn=true,autoVis=true,voiceLanguage='en-IN',speaking=false,spTok=0,greeted=false,cur='assistant',last={};
 let rec=null,wantListen=false,awake=false,awT=0,rsT=0,recFail=0,recRun=false,cfT=0,tt=0;
 let pollT=0,pollBusy=false,fails=0,camOn=false,camT=0,camBusy=false,camFail=0,scanning=false,camBad=false;
 
@@ -422,18 +425,19 @@ function infer(raw){const p=(raw||'').trim(),lo=p.toLowerCase();
 
 /* ---------- Speech output ---------- */
 function estMs(t){const w=(t||'').trim().split(/\s+/).filter(Boolean).length;return Math.max(1400,Math.min(9000,650+w*420));}
+function speechTag(){if(voiceLanguage==='hi-IN'||voiceLanguage==='en-IN')return voiceLanguage;return (navigator.language||'en-IN').toLowerCase().startsWith('hi')?'hi-IN':'en-IN';}
 function settle(){if(busy)setState('thinking');else setState(wantListen?(awake?'listening':'standby'):'idle');resumeRec();}
 function speakDone(){if(!speaking)return;speaking=false;settle();}
 function speak(t){
  if(!t||!voiceOn){settle();return;}
  const tok=++spTok;speaking=true;setState('speaking');pauseRec();
- const b=br('speak');
- if(b){try{b.speak(t);}catch(e){}setTimeout(()=>{if(tok===spTok)speakDone();},estMs(t));return;}
+ const b=br('speakLocalized')||br('speak');
+ if(b){try{if(typeof b.speakLocalized==='function')b.speakLocalized(t,speechTag());else b.speak(t);}catch(e){}setTimeout(()=>{if(tok===spTok)speakDone();},estMs(t));return;}
  if(!('speechSynthesis' in window)){speakDone();return;}
  try{window.speechSynthesis.cancel();
-  const u=new SpeechSynthesisUtterance(t),v=window.speechSynthesis.getVoices();
-  const bv=v.find(a=>a.lang==='en-GB'&&/male/i.test(a.name))||v.find(a=>a.lang==='en-GB'&&a.name.includes('Daniel'))||v.find(a=>a.lang.startsWith('en-GB'))||null;
-  if(bv)u.voice=bv;u.rate=.95;u.pitch=.75;
+  const tag=speechTag(),language=tag.slice(0,2).toLowerCase(),u=new SpeechSynthesisUtterance(t),v=window.speechSynthesis.getVoices();u.lang=tag;
+  const bv=v.find(a=>a.lang.toLowerCase()===tag.toLowerCase())||v.find(a=>a.lang.toLowerCase().startsWith(language+'-'))||null;
+  if(bv)u.voice=bv;u.rate=.96;u.pitch=.92;
   u.onend=u.onerror=()=>{if(tok===spTok)speakDone();};u.onboundary=()=>Orb.pulse();
   window.speechSynthesis.speak(u);}
  catch(e){speakDone();}}
@@ -443,7 +447,7 @@ function micMsg(m){log(m);toast(m);}
 function micBlocked(){wantListen=false;awake=false;$('mic').setAttribute('aria-pressed','false');
  const m=window.isSecureContext?'Microphone permission was denied. Allow it in your browser’s site settings, then tap the mic again.':'The browser blocked the microphone for this plain-HTTP page. Accept the permission prompt if it appears, use the text box, or open ALFRED in the Android app.';
  alertSet('mic',1,m);settle();}
-function ensureRec(){if(rec)return;rec=new SR();rec.continuous=false;rec.interimResults=false;rec.lang='en-US';
+function ensureRec(){if(rec)return;rec=new SR();rec.continuous=false;rec.interimResults=false;rec.lang=speechTag();
  rec.onstart=()=>{recRun=true;};
  rec.onspeechstart=rec.onsoundstart=()=>{Orb.pulse();if(awake&&!busy&&!speaking){clearTimeout(awT);setState('listening');}};
  rec.onresult=e=>{recFail=0;const raw=((e.results[0]&&e.results[0][0]&&e.results[0][0].transcript)||'').trim();if(!raw)return;
@@ -514,7 +518,7 @@ async function ask(text,forceVis){
   if(forceVis||(autoVis&&VIS.test(text))){const b=await grabFrame();if(id!==reqId)return;
    if(b){parts.push({inlineData:{mimeType:'image/jpeg',data:b}});log('Camera frame attached.');}
    else{log('Camera frame unavailable. Asking without an image.');toast('Camera frame unavailable. Asking without an image.');}}
-  const sys='You are ALFRED, a helpful general-purpose assistant. Today is '+new Date().toLocaleDateString(navigator.language||undefined)+'. Reply in the user’s language when clear. Be concise by default, and give more detail when asked.\nRoom: '+(last.temperature!=null?last.temperature.toFixed(1)+' °C':'unknown')+', Range: '+(last.distance!=null?Math.round(last.distance)+' cm':'unknown')+'.\nFor explicit music requests append exactly [INTENT:PLAY,data:TRACK].\nFor explicit maps/driving requests append exactly [INTENT:NAV,data:DESTINATION].\nFor explicit calls append exactly [INTENT:CALL,data:PHONE].\nFor explicit SMS append exactly [INTENT:SMS,data:PHONE,body:MESSAGE]. Never invent a phone number. ALFRED is not a navigation safety device.';
+  const sys='You are ALFRED, a calm, observant and capable assistant with a warm, natural voice. Today is '+new Date().toLocaleDateString(navigator.language||undefined)+'. Reply in the user’s language when clear. Be concise by default, acknowledge naturally, and ask one short clarifying question only when needed. Use saved personal details only when relevant. Be honest about uncertainty and do not claim actions you have not completed.\nRoom: '+(last.temperature!=null?last.temperature.toFixed(1)+' °C':'unknown')+', Range: '+(last.distance!=null?Math.round(last.distance)+' cm':'unknown')+'.\nFor explicit music requests append exactly [INTENT:PLAY,data:TRACK].\nFor explicit maps/driving requests append exactly [INTENT:NAV,data:DESTINATION].\nFor explicit calls append exactly [INTENT:CALL,data:PHONE].\nFor explicit SMS append exactly [INTENT:SMS,data:PHONE,body:MESSAGE]. Never invent a phone number. ALFRED is not a navigation safety device.';
   const contents=hist.concat([{role:'user',parts:parts}]);
   let out=null,err='';
   if(cloudReady()){
@@ -640,12 +644,13 @@ $('cloudSignOut').addEventListener('click',()=>{ls.d('alfred_sb_session');cloudU
 $('memoryReview').addEventListener('click',memoryReview);$('memoryClear').addEventListener('click',memoryClear);
 $('sbUrl').addEventListener('change',saveCloudConfig);$('sbAnon').addEventListener('change',saveCloudConfig);
 $('voiceChk').addEventListener('change',e=>{voiceOn=e.target.checked;ls.s('alfred_voice',voiceOn?'1':'0');if(!voiceOn){try{window.speechSynthesis.cancel();}catch(x){}}});
+$('voiceLanguage').addEventListener('change',e=>{voiceLanguage=e.target.value;ls.s('alfred_voice_language',voiceLanguage);if(rec){pauseRec();rec.lang=speechTag();if(wantListen)resumeRec();}log('Voice language: '+(voiceLanguage==='hi-IN'?'Hindi':voiceLanguage==='auto'?'device language':'English (India)'));});
 $('srchChk').addEventListener('change',e=>{useSearch=e.target.checked;ls.s('alfred_search',useSearch?'1':'0');});
 $('modelSel').addEventListener('change',e=>{model=e.target.value;ls.s('alfred_model',model);log('Model: '+model);});
 $('visChk').addEventListener('change',e=>{autoVis=e.target.checked;ls.s('alfred_autovis',autoVis?'1':'0');});
 document.addEventListener('visibilitychange',()=>{if(!document.hidden){clearTimeout(pollT);poll();if(wantListen&&!speaking&&!busy)resumeRec();}});
 
-voiceOn=ls.g('alfred_voice')!=='0';autoVis=ls.g('alfred_autovis')!=='0';$('voiceChk').checked=voiceOn;$('visChk').checked=autoVis;useSearch=ls.g('alfred_search')==='1';$('srchChk').checked=useSearch;{const m=ls.g('alfred_model');if(MODELS.indexOf(m)>=0)model=m;}$('modelSel').value=model;
+voiceOn=ls.g('alfred_voice')!=='0';autoVis=ls.g('alfred_autovis')!=='0';voiceLanguage=['en-IN','hi-IN','auto'].includes(ls.g('alfred_voice_language'))?ls.g('alfred_voice_language'):'auto';$('voiceChk').checked=voiceOn;$('visChk').checked=autoVis;$('voiceLanguage').value=voiceLanguage;useSearch=ls.g('alfred_search')==='1';$('srchChk').checked=useSearch;{const m=ls.g('alfred_model');if(MODELS.indexOf(m)>=0)model=m;}$('modelSel').value=model;
 const saved=ls.g('alfred_secure_pool');if(saved){const r=parseKeys(saved);if(r.k){keys=r.k;log('Loaded saved key(s) from this browser.');}}
 keysUI();cloudUI();poll();
 })();

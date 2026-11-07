@@ -8,6 +8,7 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <Preferences.h>
+#include <ESPmDNS.h>
 #include <DHT.h>
 #include "soc/soc.h"
 #include "soc/rtc_cntl_reg.h"
@@ -28,10 +29,9 @@ IPAddress subnetMask(255, 255, 255, 0);
 IPAddress primaryDNS(8, 8, 8, 8);
 IPAddress secondaryDNS(8, 8, 4, 4);
 
-// Recovery / setup access point (opens automatically when Wi-Fi cannot connect). CHANGE THE PASSWORD.
+// Recovery AP password is derived per board from the ESP32 eFuse MAC, never shared across devices.
 #define SETUP_AP_SSID   "ALFRED-Setup"
-#define SETUP_AP_PASS   "alfredsetup"           // WPA2 needs >= 8 characters
-static_assert(sizeof(SETUP_AP_PASS) >= 9, "SETUP_AP_PASS must be at least 8 characters");
+char setupApPass[13] = {0};
 
 #define CONNECT_TIMEOUT_MS  15000UL   // per candidate network
 #define AP_RETRY_MS         60000UL   // retry saved networks every 60 s while in setup mode (only if nobody is on the AP)
@@ -83,6 +83,7 @@ SemaphoreHandle_t telemetryMutex;
 DHT dht(DHTPIN, DHTTYPE);
 Telemetry tel = {0, 0, 0, 0, 0, 0, false};
 bool cameraOK = false;
+bool mdnsStarted = false;
 
 #define TEL_FRESH_MS 15000UL
 
@@ -95,7 +96,7 @@ const char HTML_DASHBOARD[] PROGMEM = R"rawliteral(
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://generativelanguage.googleapis.com">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://*.supabase.co https://generativelanguage.googleapis.com">
 <meta name="theme-color" content="#05070d">
 <title>ALFRED</title>
 <style>
@@ -233,11 +234,23 @@ nav button[aria-current=page]{color:var(--c);box-shadow:inset 0 2px var(--c)}
 </section>
 
 <section class="view" id="v-settings">
+ <h2>Cloud assistant &amp; memory</h2>
+ <div class="card">
+  <p class="note">Optional. Sign in to use your ALFRED cloud assistant and private saved memory across devices. Gemini keys configured in Supabase stay server-side. Your own keys can still be entered below.</p>
+  <div class="row"><input type="url" id="sbUrl" placeholder="Supabase project URL" aria-label="Supabase project URL" autocomplete="url"></div>
+  <div class="row"><input type="password" id="sbAnon" placeholder="Supabase publishable or anon key" aria-label="Supabase public key" autocomplete="off"></div>
+  <div class="row"><input type="email" id="sbEmail" placeholder="Account email" aria-label="Account email" autocomplete="username"></div>
+  <div class="row"><input type="password" id="sbPassword" placeholder="Account password" aria-label="Account password" autocomplete="current-password"></div>
+  <div class="row"><button class="btn" id="cloudSignIn">Sign in</button><button class="btn" id="cloudSignUp">Create account</button><button class="btn warn" id="cloudSignOut">Sign out</button></div>
+  <div class="sub" id="cloudState" role="status">Cloud memory is not configured.</div>
+  <div class="row"><button class="btn" id="memoryReview">Review saved memories</button><button class="btn warn" id="memoryClear">Clear cloud history &amp; memory</button></div>
+  <div id="memoryList" class="sub" aria-live="polite"></div>
+ </div>
  <h2>Gemini API keys</h2>
  <div class="card">
   <textarea id="keysArea" placeholder="Paste Gemini API key(s), one per line" aria-label="Gemini API keys" autocomplete="off" spellcheck="false"></textarea>
   <label class="chk"><input type="checkbox" id="remember" checked> Remember on this browser</label>
-  <p class="note">Saved keys are stored unencrypted in this browser’s localStorage, and requests go straight from your browser to Google. Anyone with access to this browser profile can read them. Use a restricted key with a spending cap.</p>
+  <p class="note">Your own keys are kept in this browser profile only when “Remember” is checked. In Cloud mode, keys are sent over HTTPS to your signed-in ALFRED function for this request and are not saved by ALFRED's server. For shared keys, configure Gemini keys as Supabase server secrets. Never commit a key to firmware or GitHub.</p>
   <div class="row"><button class="btn" id="saveKeys">Save and engage</button><button class="btn warn" id="clearKeys">Flush keys</button></div>
   <div class="sub" id="keysInfo">No key loaded.</div>
  </div>
@@ -247,9 +260,9 @@ nav button[aria-current=page]{color:var(--c);box-shadow:inset 0 2px var(--c)}
   <label class="chk"><input type="checkbox" id="visChk" checked> Attach a camera frame when a request sounds visual</label>
   <label class="chk"><input type="checkbox" id="srchChk"> Use Google Search for live answers (may need a paid Gemini plan)</label>
   <div class="row"><label for="modelSel" class="sub">Model</label><select id="modelSel" style="flex:1;min-height:44px;background:#05070d;color:var(--fg);border:1px solid var(--line);border-radius:10px;padding:0 10px">
-   <option value="gemini-3.5-flash-lite">gemini-3.5-flash-lite (best for free keys)</option>
-   <option value="gemini-3.1-flash-lite">gemini-3.1-flash-lite</option>
-   <option value="gemini-3.6-flash">gemini-3.6-flash (small free quota)</option></select></div>
+   <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite (default)</option>
+   <option value="gemini-3.6-flash">Gemini 3.6 Flash</option>
+   <option value="gemini-3.8-flash">Gemini 3.8 Flash</option></select></div>
   <p class="note">The orb reflects assistant state. Its speaking motion is simulated and pulses on speech word events when the browser provides them. It is not true audio analysis.</p>
  </div>
 </section>
@@ -269,7 +282,7 @@ nav button[aria-current=page]{color:var(--c);box-shadow:inset 0 2px var(--c)}
 (()=>{'use strict';
 const $=id=>document.getElementById(id);
 const API='https://generativelanguage.googleapis.com/v1beta/models/';
-const MODELS=['gemini-3.5-flash-lite','gemini-3.1-flash-lite','gemini-3.6-flash'];
+const MODELS=['gemini-3.5-flash-lite','gemini-3.6-flash','gemini-3.8-flash'];
 let model=MODELS[0],useSearch=false;
 const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
 const ls={g:k=>{try{return localStorage.getItem(k);}catch(e){return null;}},s:(k,v)=>{try{localStorage.setItem(k,v);}catch(e){}},d:k=>{try{localStorage.removeItem(k);}catch(e){}}};
@@ -451,12 +464,29 @@ function startListening(quiet){
  if(!SR){micMsg('Speech recognition isn’t supported in this browser. Try Chrome or Edge, or type your request.');return;}
  alertClear('mic');wantListen=true;recFail=0;ensureRec();$('mic').setAttribute('aria-pressed','true');
  if(!window.isSecureContext&&!quiet)log('Note: on plain http:// pages the browser may ask for microphone permission repeatedly.');
- if(!greeted&&!quiet){greeted=true;speak('ALFRED online. Standing by, Master Shourya.');}else{settle();}}
+ if(!greeted&&!quiet){greeted=true;speak('ALFRED online. How can I help?');}else{settle();}}
 function stopListening(){wantListen=false;sleepAwake();pauseRec();$('mic').setAttribute('aria-pressed','false');settle();}
 function awakenNow(){if(busy||speaking)return;if(!wantListen){greeted=true;startListening(true);}if(wantListen)awaken();}
 
 /* ---------- Gemini ---------- */
 const VIS=/\b(see|look|looking|view|watch|notice|holding|wearing|colou?r|face|person|camera|photo|picture|snapshot|eyes)\b|\bread (this|that|the|what)|what(?:’s|'s| is) (this|that|in)|who is (this|that|there)|in front of (me|you)/i;
+function cloudConfig(){return{url:(ls.g('alfred_sb_url')||'').replace(/\/$/,''),anon:ls.g('alfred_sb_anon')||'',session:JSON.parse(ls.g('alfred_sb_session')||'null')};}
+function cloudReady(){try{const c=cloudConfig();return !!(c.url&&c.anon&&c.session&&c.session.access_token);}catch(e){return false;}}
+async function cloudFetch(path,body){
+ const c=cloudConfig();if(!c.url||!c.anon)throw new Error('Enter the Supabase URL and public key first.');
+ let session=c.session;
+ if(session&&session.refresh_token&&session.expires_at&&session.expires_at*1000<Date.now()+120000){
+  const rr=await fetch(c.url+'/auth/v1/token?grant_type=refresh_token',{method:'POST',headers:{apikey:c.anon,'Content-Type':'application/json'},body:JSON.stringify({refresh_token:session.refresh_token})});
+  if(rr.ok){const fresh=await rr.json();fresh.expires_at=Math.floor(Date.now()/1000)+(fresh.expires_in||3600);ls.s('alfred_sb_session',JSON.stringify(fresh));session=fresh;}
+ }
+ if(!session||!session.access_token)throw new Error('Sign in to your ALFRED cloud account first.');
+ const r=await fetch(c.url+'/functions/v1/alfred-assistant',{method:'POST',headers:{apikey:c.anon,Authorization:'Bearer '+session.access_token,'Content-Type':'application/json'},body:JSON.stringify(body)});
+ const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||('Cloud request failed ('+r.status+').'));return d;
+}
+async function cloudGem(contents,sys){
+ const d=await cloudFetch('alfred-assistant',{action:'chat',contents:contents,systemInstruction:sys,apiKeys:keys,model:model,googleSearch:useSearch,remember:/^\s*(please\s+)?(remember|save to memory|don.t forget)\b/i.test((contents[contents.length-1].parts||[]).map(p=>p.text||'').join(''))});
+ return{ok:!!d.text,rotate:false,text:d.text||'',msg:d.error||''};
+}
 async function gem(key,contents,sys){
  const ac=new AbortController(),to=setTimeout(()=>ac.abort(),25000);
  try{const r=await fetch(API+model+':generateContent',{method:'POST',headers:{'Content-Type':'application/json','x-goog-api-key':key},signal:ac.signal,
@@ -475,17 +505,20 @@ function fail(text,msg){busy=false;caption(text,'Request failed: '+msg);log('Gem
 async function ask(text,forceVis){
  text=(text||'').trim().slice(0,500);if(!text)return;
  if(busy){toast('ALFRED is still working on the previous request.');return;}
- if(!keys.length){toast('Add a Gemini API key in Settings first.');go('settings');return;}
+ if(!keys.length&&!cloudReady()){toast('Connect the cloud assistant or add a Gemini API key in Settings.');go('settings');return;}
  busy=true;const id=++reqId;sleepAwake();pauseRec();setState('thinking');caption(text,'');
  try{
   const parts=[{text:text}];
   if(forceVis||(autoVis&&VIS.test(text))){const b=await grabFrame();if(id!==reqId)return;
    if(b){parts.push({inlineData:{mimeType:'image/jpeg',data:b}});log('Camera frame attached.');}
    else{log('Camera frame unavailable. Asking without an image.');toast('Camera frame unavailable. Asking without an image.');}}
-  const sys='You are Alfred. User: Shourya. Jaipur, '+new Date().toDateString()+'.\nRoom: '+(last.temperature!=null?last.temperature.toFixed(1)+' °C':'unknown')+', Range: '+(last.distance!=null?Math.round(last.distance)+' cm':'unknown')+'.\nKeep replies < 20 words.\nFor music append exactly [INTENT:PLAY,data:TRACK].\nFor maps/driving append exactly [INTENT:NAV,data:DESTINATION].\nFor calls append exactly [INTENT:CALL,data:PHONE].\nFor SMS append exactly [INTENT:SMS,data:PHONE,body:MESSAGE].';
+  const sys='You are ALFRED, a helpful general-purpose assistant. Today is '+new Date().toLocaleDateString(navigator.language||undefined)+'. Reply in the user’s language when clear. Be concise by default, and give more detail when asked.\nRoom: '+(last.temperature!=null?last.temperature.toFixed(1)+' °C':'unknown')+', Range: '+(last.distance!=null?Math.round(last.distance)+' cm':'unknown')+'.\nFor explicit music requests append exactly [INTENT:PLAY,data:TRACK].\nFor explicit maps/driving requests append exactly [INTENT:NAV,data:DESTINATION].\nFor explicit calls append exactly [INTENT:CALL,data:PHONE].\nFor explicit SMS append exactly [INTENT:SMS,data:PHONE,body:MESSAGE]. Never invent a phone number. ALFRED is not a navigation safety device.';
   const contents=hist.concat([{role:'user',parts:parts}]);
   let out=null,err='';
-  for(let n=0;n<keys.length;n++){
+  if(cloudReady()){
+   const r=await cloudGem(contents,sys);if(id!==reqId)return;
+   if(r.ok)out=r.text;else err=r.msg;
+  }else for(let n=0;n<keys.length;n++){
    const r=await gem(keys[ki],contents,sys);if(id!==reqId)return;
    if(r.ok){out=r.text;break;}
    err=r.msg;
@@ -561,6 +594,31 @@ function saveKeys(){const raw=$('keysArea').value,r=parseKeys(raw);
 function flushKeys(){stopListening();reqId++;busy=false;keys=[];ki=0;hist=[];ls.d('alfred_secure_pool');$('keysArea').value='';
  try{window.speechSynthesis.cancel();}catch(e){}speaking=false;keysUI();settle();log('Keys cleared from memory and this browser.');toast('Keys flushed.');}
 
+/* ---------- Cloud account and persistent memory ---------- */
+function cloudUI(){let c;try{c=cloudConfig();}catch(e){c={url:'',anon:'',session:null};}
+ $('sbUrl').value=c.url;$('sbAnon').value=c.anon;
+ put('cloudState',c.session&&c.session.user?'Signed in as '+(c.session.user.email||'ALFRED user')+'. Cloud AI and private memory are ready.':(c.url&&c.anon?'Cloud configured. Sign in or create an account.':'Cloud memory is not configured.'));
+}
+function saveCloudConfig(){const url=$('sbUrl').value.trim().replace(/\/$/,''),anon=$('sbAnon').value.trim();
+ if(url&&!/^https:\/\/[a-z0-9-]+\.supabase\.co$/i.test(url)){toast('Use the project URL ending in .supabase.co.');return false;}
+ if(url&&(!anon||anon.length<20)){toast('Paste the Supabase publishable or anon key.');return false;}
+ ls.s('alfred_sb_url',url);ls.s('alfred_sb_anon',anon);cloudUI();return true;}
+async function cloudAuth(mode){if(!saveCloudConfig())return;const c=cloudConfig(),email=$('sbEmail').value.trim(),password=$('sbPassword').value;
+ if(!email||!password){toast('Enter your account email and password.');return;}
+ const path=mode==='signup'?'/auth/v1/signup':'/auth/v1/token?grant_type=password';
+ try{const r=await fetch(c.url+path,{method:'POST',headers:{apikey:c.anon,'Content-Type':'application/json'},body:JSON.stringify({email:email,password:password})});const d=await r.json().catch(()=>({}));
+  if(!r.ok)throw new Error(d.msg||d.message||d.error_description||d.error||'Account request failed.');
+  if(!d.access_token){put('cloudState','Check your email to confirm the account, then sign in here.');return;}
+  d.expires_at=Math.floor(Date.now()/1000)+(d.expires_in||3600);ls.s('alfred_sb_session',JSON.stringify(d));$('sbPassword').value='';cloudUI();toast('Cloud assistant connected.');}
+ catch(e){put('cloudState',e.message||'Could not connect. Check the URL, key and network.');}}
+async function memoryReview(){try{const d=await cloudFetch('alfred-assistant',{action:'memory_list'}),box=$('memoryList');box.textContent='';
+ if(!d.memories||!d.memories.length){box.textContent='No saved facts yet. Tell ALFRED “Remember that …” to save one.';return;}
+ d.memories.forEach(m=>{const row=document.createElement('div');row.className='card';row.textContent=m.memory_text;box.appendChild(row);});}
+ catch(e){put('memoryList',e.message||'Could not load saved memories.');}}
+async function memoryClear(){if(!window.confirm('Delete all saved ALFRED conversations and personal memories for this account?'))return;
+ try{await cloudFetch('alfred-assistant',{action:'memory_clear'});$('memoryList').textContent='Cloud history and saved memories cleared.';toast('Cloud memory cleared.');}
+ catch(e){toast(e.message||'Could not clear cloud memory.');}}
+
 /* ---------- Wiring ---------- */
 function sendText(){const f=$('cmd'),v=f.value.trim();if(!v)return;if(busy){toast('ALFRED is still working on the previous request.');return;}f.value='';ask(v);}
 ['assistant','vision','sensors','network','settings'].forEach(n=>$('t-'+n).addEventListener('click',()=>go(n)));
@@ -575,6 +633,10 @@ $('cfOk').addEventListener('click',()=>{const a=cfAct;cfClose();if(a)a();});$('c
 $('visBtn').addEventListener('click',()=>{go('assistant');ask('Describe what you see in front of the camera, briefly.',true);});
 $('scanBtn').addEventListener('click',scan);$('connBtn').addEventListener('click',netConnect);$('forgetBtn').addEventListener('click',netForget);
 $('saveKeys').addEventListener('click',saveKeys);$('clearKeys').addEventListener('click',flushKeys);
+$('cloudSignIn').addEventListener('click',()=>cloudAuth('signin'));$('cloudSignUp').addEventListener('click',()=>cloudAuth('signup'));
+$('cloudSignOut').addEventListener('click',()=>{ls.d('alfred_sb_session');cloudUI();$('memoryList').textContent='';toast('Signed out of cloud memory.');});
+$('memoryReview').addEventListener('click',memoryReview);$('memoryClear').addEventListener('click',memoryClear);
+$('sbUrl').addEventListener('change',saveCloudConfig);$('sbAnon').addEventListener('change',saveCloudConfig);
 $('voiceChk').addEventListener('change',e=>{voiceOn=e.target.checked;ls.s('alfred_voice',voiceOn?'1':'0');if(!voiceOn){try{window.speechSynthesis.cancel();}catch(x){}}});
 $('srchChk').addEventListener('change',e=>{useSearch=e.target.checked;ls.s('alfred_search',useSearch?'1':'0');});
 $('modelSel').addEventListener('change',e=>{model=e.target.value;ls.s('alfred_model',model);log('Model: '+model);});
@@ -583,7 +645,7 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden){clearTime
 
 voiceOn=ls.g('alfred_voice')!=='0';autoVis=ls.g('alfred_autovis')!=='0';$('voiceChk').checked=voiceOn;$('visChk').checked=autoVis;useSearch=ls.g('alfred_search')==='1';$('srchChk').checked=useSearch;{const m=ls.g('alfred_model');if(MODELS.indexOf(m)>=0)model=m;}$('modelSel').value=model;
 const saved=ls.g('alfred_secure_pool');if(saved){const r=parseKeys(saved);if(r.k){keys=r.k;log('Loaded saved key(s) from this browser.');}}
-keysUI();poll();
+keysUI();cloudUI();poll();
 })();
 </script>
 </body>
@@ -654,6 +716,7 @@ static void buildCandidates() {
 }
 
 static void startCandidate() {
+  if (mdnsStarted) { MDNS.end(); mdnsStarted = false; }
   Cred &c = cand[candI];
   if (c.useStatic) {
     if (!WiFi.config(localIP, gatewayIP, subnetMask, primaryDNS, secondaryDNS)) {
@@ -673,9 +736,10 @@ static void startCandidate() {
 static void startAP() {
   if (!apOn) {
     WiFi.mode(WIFI_AP_STA);
-    apOn = WiFi.softAP(SETUP_AP_SSID, SETUP_AP_PASS);
+    apOn = WiFi.softAP(SETUP_AP_SSID, setupApPass);
     Serial.printf("[WIFI] Setup AP \"%s\" %s at %s\n", SETUP_AP_SSID, apOn ? "up" : "FAILED",
                   WiFi.softAPIP().toString().c_str());
+    if (apOn) Serial.printf("[WIFI] Recovery password (unique to this board): %s\n", setupApPass);
   }
   netState = NS_AP_ONLY;
   netT0 = millis();
@@ -695,6 +759,11 @@ static void onConnected() {
   connT0 = millis();
   lostT0 = 0;
   WiFi.setSleep(false);                            // lower latency for the camera feed
+  if (!mdnsStarted) {
+    mdnsStarted = MDNS.begin("alfred");
+    if (!mdnsStarted) Serial.println("[WIFI] mDNS unavailable; use the DHCP address shown below.");
+    else Serial.println("[WIFI] Dashboard alias: http://alfred.local/");
+  }
   if (userPending) {
     saveCred(userCred);
     userPending = false;
@@ -1027,12 +1096,20 @@ static bool initCamera() {
 // ==========================================
 // SETUP / LOOP
 // ==========================================
+static void initSetupApPassword() {
+  const uint64_t chipId = ESP.getEfuseMac();
+  snprintf(setupApPass, sizeof(setupApPass), "%06lX%06lX",
+           (unsigned long)((chipId >> 24) & 0xFFFFFF),
+           (unsigned long)(chipId & 0xFFFFFF));
+}
+
 void setup() {
 #if DISABLE_BROWNOUT
   WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
 #endif
   Serial.begin(115200);
   Serial.println("\n[SYSTEM] ALFRED v2 starting...");
+  initSetupApPassword();
 
   telemetryMutex = xSemaphoreCreateMutex();
   pinMode(TRIG_PIN, OUTPUT);

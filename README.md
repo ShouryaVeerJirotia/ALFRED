@@ -2,7 +2,7 @@
 
 ALFRED is a compact ESP32-CAM assistive-intelligence prototype with a browser dashboard. The device serves one responsive UI to phones, tablets and computers; the ALFRED-Showcase Supabase backend provides authenticated chat history and long-term memory across devices.
 
-The complete source, backend, Android companion, and setup notes are in the [cloud-ready source package](https://github.com/ShouryaVeerJirotia/ALFRED/blob/main/ALFRED_Source_2026-11-07_CloudReady_v2.zip). The standalone firmware file is also available at the repository root as `AlfredsFirmware_v2.2.ino`.
+The complete source, backend, Android companion, setup notes and assistant roadmap are in the [cloud-ready source package](https://github.com/ShouryaVeerJirotia/ALFRED/blob/main/ALFRED_Source_2026-11-07_CloudReady_v3.zip). The standalone firmware file is also available at the repository root as `AlfredsFirmware_v2.2.ino`.
 
 ## Project map
 
@@ -11,7 +11,7 @@ The complete source, backend, Android companion, and setup notes are in the [clo
 - `firmware/AlfredsFirmware_v2.2/AlfredsFirmware_v2.2.ino` — working copy for firmware updates.
 - `android/` — existing Android WebView companion source.
 - `backend/supabase/` — Edge Function and SQL migration for authenticated cloud AI and memory.
-- `docs/` — setup, hardware scope, security, status and verification checklist.
+- `docs/` — setup, hardware scope, status, verification checklist and Jarvis roadmap.
 
 ## Verification status
 

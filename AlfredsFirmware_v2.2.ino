@@ -236,7 +236,7 @@ nav button[aria-current=page]{color:var(--c);box-shadow:inset 0 2px var(--c)}
 <section class="view" id="v-settings">
  <h2>Cloud assistant &amp; memory</h2>
  <div class="card">
-  <p class="note">Optional. Sign in to use your ALFRED cloud assistant and private saved memory across devices. Gemini keys configured in Supabase stay server-side. Your own keys can still be entered below.</p>
+  <p class="note">ALFRED-Showcase is pre-connected. Create or sign in to the same account on each device to use cloud chat and private saved memory. Add your own Gemini key below, or ask the project owner to configure shared keys in Supabase.</p>
   <div class="row"><input type="url" id="sbUrl" placeholder="Supabase project URL" aria-label="Supabase project URL" autocomplete="url"></div>
   <div class="row"><input type="password" id="sbAnon" placeholder="Supabase publishable or anon key" aria-label="Supabase public key" autocomplete="off"></div>
   <div class="row"><input type="email" id="sbEmail" placeholder="Account email" aria-label="Account email" autocomplete="username"></div>
@@ -282,6 +282,8 @@ nav button[aria-current=page]{color:var(--c);box-shadow:inset 0 2px var(--c)}
 (()=>{'use strict';
 const $=id=>document.getElementById(id);
 const API='https://generativelanguage.googleapis.com/v1beta/models/';
+const ALFRED_SUPABASE_URL='https://rviwomejtiiezezofmpn.supabase.co';
+const ALFRED_SUPABASE_PUBLIC_KEY='sb_publishable_gtNnN20kA6QxILW6_n35jg_7vCPKWAU';
 const MODELS=['gemini-3.5-flash-lite','gemini-3.6-flash','gemini-3.8-flash'];
 let model=MODELS[0],useSearch=false;
 const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
@@ -470,7 +472,7 @@ function awakenNow(){if(busy||speaking)return;if(!wantListen){greeted=true;start
 
 /* ---------- Gemini ---------- */
 const VIS=/\b(see|look|looking|view|watch|notice|holding|wearing|colou?r|face|person|camera|photo|picture|snapshot|eyes)\b|\bread (this|that|the|what)|what(?:’s|'s| is) (this|that|in)|who is (this|that|there)|in front of (me|you)/i;
-function cloudConfig(){return{url:(ls.g('alfred_sb_url')||'').replace(/\/$/,''),anon:ls.g('alfred_sb_anon')||'',session:JSON.parse(ls.g('alfred_sb_session')||'null')};}
+function cloudConfig(){return{url:(ls.g('alfred_sb_url')||ALFRED_SUPABASE_URL).replace(/\/$/,''),anon:ls.g('alfred_sb_anon')||ALFRED_SUPABASE_PUBLIC_KEY,session:JSON.parse(ls.g('alfred_sb_session')||'null')};}
 function cloudReady(){try{const c=cloudConfig();return !!(c.url&&c.anon&&c.session&&c.session.access_token);}catch(e){return false;}}
 async function cloudFetch(path,body){
  const c=cloudConfig();if(!c.url||!c.anon)throw new Error('Enter the Supabase URL and public key first.');

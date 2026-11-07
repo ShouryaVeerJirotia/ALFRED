@@ -1,19 +1,27 @@
 # ALFRED
 
-ALFRED is an AI-powered assistive-intelligence prototype for people who are blind or have low vision. It combines ESP32-CAM vision, nearby sensing, browser-based voice interaction, and an optional authenticated cloud assistant with cross-device memory.
+ALFRED is a compact ESP32-CAM assistive-intelligence prototype with a browser dashboard. The device serves one responsive UI to phones, tablets and computers; the ALFRED-Showcase Supabase backend provides authenticated chat history and long-term memory across devices.
 
-## Project package
+## Project map
 
-`ALFRED_Source_2026-11-07.zip` contains the firmware, Android companion source, Supabase Edge Function and migration, setup instructions, hardware notes, and verification checklist. The firmware compiles for AI Thinker ESP32-CAM with ESP32 Arduino core 3.3.10. The current sketch compiled for AI Thinker ESP32-CAM with ESP32 Arduino core 3.3.10 and was uploaded through the CP2102 adapter on 2026-11-07; esptool verified the flash write. Camera, Wi-Fi, voice, and sensor runtime validation is still pending.
+- `backups/AlfredsFirmware_v2.2_original_2026-11-07.ino` — untouched local-only source backup.
+- A redacted source copy is included for review; the original is excluded from GitHub because it contains a shared recovery-network password.
+- `firmware/AlfredsFirmware_v2.2/AlfredsFirmware_v2.2.ino` — working copy for firmware updates.
+- `android/` — existing Android WebView companion source.
+- `backend/supabase/` — Edge Function and SQL migration for authenticated cloud AI and memory.
+- `docs/` — setup, hardware scope, security, status and verification checklist.
 
-The untouched original firmware backup stays in the local project folder and is not included here because it contains a shared recovery-network password. A redacted copy is included in the package. API keys and personal Wi-Fi credentials are not included.
+## Verification status
 
-## Quick start
+The previous firmware build was flashed and verified through the CP2102 on 2026-11-07. The latest revision adds the ALFRED-Showcase connection defaults and compiles for AI Thinker ESP32-CAM with ESP32 Arduino core 3.3.10, but the latest upload has not completed: the ESP32 returned no serial data during the bootloader handshake. Camera, Wi-Fi, speech, and sensor behavior still requires a normal-boot hardware check.
 
-Open `firmware/AlfredsFirmware_v2.2/AlfredsFirmware_v2.2.ino` in Arduino IDE. Join `ALFRED-Setup` if the device cannot join saved Wi-Fi, then visit `http://192.168.4.1/`. After setup, open `http://alfred.local/` when the network supports mDNS, or use the IP shown in Serial Monitor.
+## Quick behavior
 
-For cross-device memory, deploy the optional Supabase migration and Edge Function and set Gemini API keys in Supabase secrets. Never put provider keys in firmware or commit them to GitHub.
+1. The ESP32 tries its saved Wi-Fi network on boot. If it cannot connect, it starts `ALFRED-Setup`; join it from any phone or computer and open `http://192.168.4.1/` to configure Wi-Fi.
+2. Once joined to Wi-Fi, open the address shown by the device in any modern browser. The Android wrapper is optional.
+3. For local Gemini mode, enter your own Gemini API key in Settings. It is kept in that browser profile if you enable “Remember on this browser.”
+4. In Settings, create or sign in to an ALFRED cloud account. The Supabase project details are prefilled. Enter your Gemini key under Settings to use AI now; shared server keys can be added by the project owner in Supabase Edge Function Secrets. The firmware contains no Gemini provider key.
 
-## Safety
+## Safety and privacy
 
-ALFRED provides supplementary information only. It does not guarantee safe navigation and does not replace a white cane, guide dog, or other established mobility aid. The hobby flame sensor is not a fire alarm.
+ALFRED is supplementary information for people who are blind or have low vision. It is not a navigation aid or substitute for a white cane, guide dog, or other established mobility aid. The flame sensor is not a fire alarm. The ESP32 dashboard is currently unauthenticated on the local network; use a trusted Wi-Fi network. Cloud memory is private to the signed-in Supabase user. Camera images are sent only with vision requests.

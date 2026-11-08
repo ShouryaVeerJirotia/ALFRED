@@ -1,0 +1,25 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+**/.env
+secrets.h
+backend/supabase/functions/.env
+
+# Build outputs
+.arduino/
+.build/
+work/
+__pycache__/
+desktop/__pycache__/
+*.elf
+*.bin
+*.hex
+*.map
+*.apk
+*.aab
+.gradle/
+build/
+android/local.properties
+# Preserve the untouched original locally; the redacted review copy is tracked.
+backups/AlfredsFirmware_v2.2_original_2026-11-07.ino

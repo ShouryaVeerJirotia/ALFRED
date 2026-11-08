@@ -193,9 +193,10 @@ nav button[aria-current=page]{color:var(--c);box-shadow:inset 0 2px var(--c)}
   </div>
  </div>
  <details class="card"><summary>Phone actions</summary>
-  <div class="row"><input type="text" id="musicTrack" maxlength="120" placeholder="Track name" aria-label="Track name"><button class="btn" id="bMusic">Play</button></div>
+  <div class="row"><input type="text" id="musicTrack" maxlength="120" placeholder="Track or artist" aria-label="Track or artist"><select id="musicApp" class="settingSelect" aria-label="Music app"><option value="any">Any app</option><option value="spotify">Spotify</option><option value="ytmusic">YouTube Music</option></select><button class="btn" id="bMusic">Play</button></div>
   <div class="row"><input type="text" id="navDest" maxlength="120" placeholder="Destination" aria-label="Destination"><button class="btn" id="bNav">Drive</button></div>
-  <div class="row"><input type="tel" id="phone" maxlength="20" placeholder="Phone number" aria-label="Phone number"><input type="text" id="smsBody" maxlength="300" placeholder="SMS text" aria-label="SMS text"></div>
+  <div class="row"><input type="tel" id="phone" maxlength="20" placeholder="Phone number or choose contact" aria-label="Phone number"><button class="btn" id="bContact">Contacts</button></div>
+  <div class="row"><input type="text" id="smsBody" maxlength="300" placeholder="SMS text" aria-label="SMS text"></div>
   <div class="row"><button class="btn" id="bCall">Call</button><button class="btn" id="bSms">Send text</button></div>
  </details>
  <details class="card"><summary>Code projects (Codex on this computer)</summary>
@@ -272,9 +273,13 @@ nav button[aria-current=page]{color:var(--c);box-shadow:inset 0 2px var(--c)}
   <div class="row"><label for="voiceLanguage" class="sub">Voice language</label><select id="voiceLanguage" class="settingSelect" aria-label="Voice language"><option value="auto">Auto (Hindi/English)</option><option value="en-IN">English (India)</option><option value="hi-IN">Hindi</option></select></div>
   <p class="note">Auto follows Hindi device locales and uses English (India) for other locales. Speech support and installed voices vary by browser and phone. Text chat can still reply in the language you use.</p>
   <label class="chk"><input type="checkbox" id="voiceChk" checked> Speak replies aloud</label>
+  <label class="chk"><input type="checkbox" id="neuralVoiceChk" checked disabled> Use the device voice for faster replies</label>
+  <p class="note">Spoken replies use Android or the browser's installed Hindi/English voice so the answer can start without waiting for a second cloud request. Voice quality varies with the voice data installed on each device.</p>
+  <button class="btn" id="handsFreeBtn" type="button">Start hands-free listening (Android app)</button>
+  <p class="note">In the Android app, hands-free listening starts after you grant microphone and notification access and stays active with an ongoing Stop notification, including when ALFRED is minimized. After “Alfred,” the service listens for your command; if the app is closed, it queues the command for processing when you reopen ALFRED. Android may stop the service if you force-stop the app or revoke permission.</p>
   <label class="chk"><input type="checkbox" id="visChk" checked> Attach a camera frame when a request sounds visual</label>
   <label class="chk"><input type="checkbox" id="srchChk" checked> Use Google Search for current questions</label>
-  <p class="note">Enabled by default for questions about current or recent information. Switch it off here whenever you prefer. Google currently lists Search grounding as unavailable on the Gemini API Free tier; an eligible paid-tier project may be needed and separate usage charges can apply.</p>
+  <p class="note">Enabled by default for current questions. In signed-in cloud mode, if Gemini Search is unavailable or out of quota, ALFRED can summarize live search excerpts and show source links; if summarization also fails, it offers a live search link. Gemini Search grounding may require an eligible paid-tier project.</p>
   <div class="row"><label for="modelSel" class="sub">Model</label><select id="modelSel" style="flex:1;min-height:44px;background:#05070d;color:var(--fg);border:1px solid var(--line);border-radius:10px;padding:0 10px">
    <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite (default)</option>
    <option value="gemini-3.6-flash">Gemini 3.6 Flash</option>
@@ -306,8 +311,8 @@ const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
 const ls={g:k=>{try{return localStorage.getItem(k);}catch(e){return null;}},s:(k,v)=>{try{localStorage.setItem(k,v);}catch(e){}},d:k=>{try{localStorage.removeItem(k);}catch(e){}}};
 const br=f=>{const a=window.AlfredAndroid;return a&&typeof a[f]==='function'?a:null;};
 const sleep=ms=>new Promise(r=>setTimeout(r,ms));
-let keys=[],ki=0,hist=[],busy=false,reqId=0,voiceOn=true,autoVis=true,voiceLanguage='en-IN',speaking=false,spTok=0,greeted=false,cur='assistant',last={};
-let rec=null,wantListen=false,awake=false,awT=0,rsT=0,recFail=0,recRun=false,cfT=0,tt=0;
+let keys=[],ki=0,hist=[],busy=false,reqId=0,voiceOn=true,neuralVoice=true,autoVis=true,voiceLanguage='en-IN',speaking=false,spTok=0,greeted=false,cur='assistant',last={},activeAudio=null;
+let rec=null,wantListen=false,awake=false,awT=0,rsT=0,recFail=0,recRun=false,nativeTapPending=false,pendingLocationPrompt='',cfT=0,tt=0;
 let codexJob=null,codexPoll=0;
 let pollT=0,pollBusy=false,fails=0,camOn=false,camT=0,camBusy=false,camFail=0,scanning=false,camBad=false;
 
@@ -417,19 +422,37 @@ async function grabFrame(){const ac=new AbortController(),to=setTimeout(()=>ac.a
 /* ---------- Phone actions ---------- */
 const phoneOK=p=>/^\+?[0-9 ()-]{3,20}$/.test(p);
 function openUri(p,f){const t=Date.now();window.location.href=p;if(f)setTimeout(()=>{if(Date.now()-t<2200&&!document.hidden)window.location.href=f;},900);}
-function doMusic(){const t=$('musicTrack').value.trim().slice(0,120);if(!t)return;log('Opening Spotify…');
- const b=br('playSpotify');if(b){b.playSpotify(t);return;}
- const e=encodeURIComponent(t);openUri('spotify:search:'+e,'https://open.spotify.com/search/'+e);}
+function doMusic(track,app){const t=(track||$('musicTrack').value).trim().slice(0,120);if(!t)return;
+ const provider=app||$('musicApp').value||'any';$('musicTrack').value=t;$('musicApp').value=['spotify','ytmusic','any'].includes(provider)?provider:'any';
+ const b=br('playMusic');
+ if(b){log('Sending playback request to '+(provider==='ytmusic'?'YouTube Music':provider==='spotify'?'Spotify':'a music app')+' for “'+t+'”…');b.playMusic(provider,t);return;}
+ log('Opening '+(provider==='spotify'?'Spotify':'YouTube Music')+' search for “'+t+'”. In this browser, select a result to start playback.');
+ const e=encodeURIComponent(t);if(provider==='ytmusic'){openUri('https://music.youtube.com/search?q='+e);return;}
+ if(provider==='spotify'){openUri('spotify:search:'+e,'https://open.spotify.com/search/'+e);return;}
+ if(provider==='any'){openUri('https://music.youtube.com/search?q='+e,'https://open.spotify.com/search/'+e);return;}}
 function doNav(){const d=$('navDest').value.trim().slice(0,120);if(!d)return;log('Opening navigation…');
  const b=br('navigate');if(b){b.navigate(d);return;}
  const e=encodeURIComponent(d);openUri('google.navigation:q='+e+'&mode=d','https://www.google.com/maps/dir/?api=1&destination='+e+'&travelmode=driving');}
 function doCall(){const p=$('phone').value.trim();if(!p)return;if(!phoneOK(p)){toast('Enter a valid phone number (digits, +, spaces, dashes).');return;}
  log('Placing call…');const b=br('callNumber');if(b){b.callNumber(p);return;}window.location.href='tel:'+p.replace(/[\s()-]/g,'');}
+function chooseContact(){const b=br('selectContact');if(b){b.selectContact();return;}toast('Choose a contact from the ALFRED Android app to use your phone contacts.');}
+function startContactCall(name){const b=br('callContact');if(b){b.callContact((name||'').slice(0,100));return;}toast('Contact calling is available in the ALFRED Android app.');}
+window.alfredContactSelected=function(name,phone,action){if(!phoneOK(phone||'')){toast('That contact does not have a usable phone number.');return;}
+ $('phone').value=phone;$('phone').setAttribute('aria-label',name?'Phone number for '+name:'Phone number');log('Selected contact '+(name||'')+'.');
+ if(action==='call')confirmAct('call',phone);else toast((name?name+': ':'')+'contact number added.');};
+window.alfredNativeTranscript=function(text){text=String(text||'').trim();if(nativeTapPending){nativeTapPending=false;wantListen=false;$('mic').setAttribute('aria-pressed','false');$('mic').setAttribute('aria-label','Start voice listening');$('mic').title='Tap to start listening';}if(text){log('Heard: '+text);ask(text);}};
+window.alfredNativeListeningState=function(active,message){if(active){$('mic').setAttribute('aria-pressed','true');$('mic').title='Listening — tap to stop';log(message||'Listening.');}else if(nativeTapPending){nativeTapPending=false;wantListen=false;$('mic').setAttribute('aria-pressed','false');$('mic').setAttribute('aria-label','Start voice listening');$('mic').title='Tap to start listening';if(message)log(message);}};
+window.alfredNativeLocation=function(lat,lon,accuracy){const prompt=pendingLocationPrompt||'Current location';pendingLocationPrompt='';const msg='Your phone location is approximately '+Number(lat).toFixed(5)+', '+Number(lon).toFixed(5)+(Number(accuracy)>0?' (accuracy about '+Math.round(Number(accuracy))+' meters).':'.');caption(prompt,msg);renderSources([{title:'Open this location in Google Maps',url:'https://www.google.com/maps/search/?api=1&query='+encodeURIComponent(lat+','+lon)}]);log('ALFRED: '+msg);speak(msg);};
+window.alfredNativeLocationError=function(message){const prompt=pendingLocationPrompt||'Current location';pendingLocationPrompt='';caption(prompt,message||'Could not get a current location.');log('Location: '+(message||'unavailable'));toast(message||'Could not get a current location.');};
+window.alfredNativeListeningState=function(active,message){if(active){$('mic').setAttribute('aria-pressed','true');$('mic').title='Listening — tap to stop';log(message||'Listening.');}else if(nativeTapPending){$('mic').setAttribute('aria-pressed','false');$('mic').setAttribute('aria-label','Start voice listening');$('mic').title='Tap to start listening';if(message)log(message);}};
+window.alfredWakeDetected=function(){log('Wake phrase heard. Listening for your command…');setState('listening');if(voiceOn){const b=br('acknowledgeWake');if(b){try{b.acknowledgeWake();return;}catch(e){}}speak('Yes?');}else{const b=br('resumeHandsFree');if(b)try{b.resumeHandsFree();}catch(e){}}};
+window.alfredHandsFreeState=function(active){$('handsFreeBtn').textContent=active?'Stop hands-free listening':'Start hands-free listening (Android app)';$('handsFreeBtn').setAttribute('aria-pressed',active?'true':'false');if(active&&wantListen)stopListening();log(active?'Native hands-free listening is active.':'Native hands-free listening stopped.');};
 function doSms(){const p=$('phone').value.trim(),m=$('smsBody').value.trim().slice(0,300);if(!p)return;if(!phoneOK(p)){toast('Enter a valid phone number (digits, +, spaces, dashes).');return;}
  log('Opening messages…');const b=br('sendSms');if(b){b.sendSms(p,m);return;}window.location.href='sms:'+p.replace(/[\s()-]/g,'')+'?&body='+encodeURIComponent(m);}
 function cfClose(){$('confirm').hidden=true;clearTimeout(cfT);cfAct=null;}
 let cfAct=null;
 function confirmAct(kind,phone,body){
+ if(kind==='contact'){$('phone').value='';put('cfText','Open your phone contacts to choose '+phone+'? ALFRED will call only after you choose a contact.');cfAct=()=>startContactCall(phone);$('confirm').hidden=false;clearTimeout(cfT);cfT=setTimeout(cfClose,20000);return;}
  if(!phoneOK(phone)){log('Ignored an invalid phone number in the model reply.');return;}
  $('phone').value=phone;if(kind==='sms')$('smsBody').value=body.slice(0,300);
  put('cfText','Gemini wants to '+(kind==='call'?'call ':'text ')+phone+(kind==='sms'?': “'+body.slice(0,120)+'”':'')+'. Allow?');
@@ -459,20 +482,39 @@ async function codexDiscard(){if(!codexJob)return;put('codexResult','Discarding 
  try{const d=await codexFetch('tasks/'+encodeURIComponent(codexJob)+'/discard',{});codexRender(d);codexJob=null;}
  catch(e){put('codexResult',e.message||'Could not discard patch.');}}
 function infer(raw){const p=(raw||'').trim(),lo=p.toLowerCase();
+ const cleanTrack=s=>String(s||'').trim().replace(/^(?:(?:the|a)\s+)?(?:song|track)\s+/i,'').trim();
+ const targeted=lo.match(/^(?:please\s+)?(?:play|put on|start)\s+(?:the\s+)?(.+?)\s+(?:on|in)\s+(?:the\s+)?(youtube music|yt music|spotify)\s*$/);
+ if(targeted){const track=cleanTrack(p.slice(lo.lastIndexOf(targeted[1])));if(!track){toast('Tell me the song name to play.');return 'missing-track';}const provider=/spotify/.test(targeted[2])?'spotify':'ytmusic';doMusic(track,provider);return 'music';}
  const pm=lo.match(/^(?:please\s+)?(?:play\s+|(?:start|open)\s+(?:music|song|spotify)\s+)(?:(?:music|song|spotify)\s+)?(.+)$/);
- if(pm&&!/\bmaps?\b/.test(lo)){$('musicTrack').value=p.slice(lo.lastIndexOf(pm[1])).trim();setTimeout(doMusic,800);return true;}
+ if(pm&&!/\bmaps?\b/.test(lo)){$('musicTrack').value=cleanTrack(p.slice(lo.lastIndexOf(pm[1])).replace(/\s+(?:on|in)\s+(?:the\s+)?(?:spotify|youtube music|yt music)$/i,''));const provider=/spotify/.test(lo)?'spotify':/youtube music|yt music/.test(lo)?'ytmusic':null;doMusic($('musicTrack').value,provider);return 'music';}
+ const app=lo.match(/^(?:please\s+)?(?:open|launch|start|switch to)\s+(?:the\s+)?(.+?)(?:\s+app)?[.!?]*$/);
+ if(app&&!/^(?:music|a song|the song|song)$/.test(app[1])){const name=p.slice(lo.lastIndexOf(app[1])).replace(/\s+app[.!?]*$/i,'').replace(/[.!?]+$/,'').trim();const b=br('openApp');if(b){b.openApp(name);}else toast('Opening phone apps requires the ALFRED Android app.');return 'app';}
  const nm=lo.match(/\b(?:navigate|drive|take me|route|directions|maps?)\s+(?:to\s+)?(.+)/);
- if(nm){$('navDest').value=p.slice(lo.lastIndexOf(nm[1])).trim();setTimeout(doNav,800);return true;}
+ if(nm){$('navDest').value=p.slice(lo.lastIndexOf(nm[1])).trim();doNav();return 'navigation';}
  return false;}
+function localDeviceAnswer(text){const q=(text||'').toLowerCase();if(!last||!Object.keys(last).length)return null;
+ const mentionsSensor=/\b(humidity|humid|temperature|temp|distance|how far|obstacle|proximity|hc\s*-?sr04|ultrasonic|flame|fire|ir sensor|sensor|readings)\b/.test(q);
+ const wants=/\b(what|how much|tell me|read|current|currently|show|give me|check)\b/.test(q)||/\?$/.test(text||'');if(!wants&&!mentionsSensor)return null;
+ if(/\b(humidity|humid)\b/.test(q)&&/\b(temperature|temp)\b/.test(q)){const h=typeof last.humidity==='number'?Math.round(last.humidity)+' percent':'unavailable',t=typeof last.temperature==='number'?Number(last.temperature).toFixed(1)+' degrees Celsius':'unavailable';return 'Current temperature is '+t+' and humidity is '+h+'.';}
+ if(/\b(humidity|humid)\b/.test(q))return typeof last.humidity==='number'?'Current humidity is '+Math.round(last.humidity)+' percent.':'The humidity sensor has no current reading.';
+ if(/\b(temperature|how hot|how cold)\b/.test(q))return typeof last.temperature==='number'?'Current temperature is '+Number(last.temperature).toFixed(1)+' degrees Celsius.':'The temperature sensor has no current reading.';
+ if(/\b(distance|how far|obstacle|proximity|hc\s*-?sr04|ultrasonic)\b/.test(q))return typeof last.distance==='number'?'The HC-SR04 ultrasonic sensor reads '+Math.round(last.distance)+' centimeters. This is a sensor reading, not a safe navigation instruction.':'The HC-SR04 distance sensor has no current reading.';
+ if(/\b(flame|fire|ir sensor|flame detector)\b/.test(q))return typeof last.flame==='boolean'?'The flame sensor currently reports '+(last.flame?'a trigger':'no trigger')+'.':'The flame sensor has no current reading.';
+ if(/\b(sensor|readings)\b/.test(q)){const a=[];if(typeof last.temperature==='number')a.push('temperature '+Number(last.temperature).toFixed(1)+' degrees Celsius');if(typeof last.humidity==='number')a.push('humidity '+Math.round(last.humidity)+' percent');if(typeof last.distance==='number')a.push('distance '+Math.round(last.distance)+' centimeters');if(typeof last.flame==='boolean')a.push('flame '+(last.flame?'triggered':'clear'));return a.length?'Current sensor readings: '+a.join(', ')+'.':'There are no current sensor readings.';}
+ return null;}
+async function refreshSensorAnswer(text){if(!/\b(humidity|humid|temperature|temp|distance|how far|obstacle|proximity|hc\s*-?sr04|ultrasonic|flame|fire|ir sensor|sensor|readings)\b/i.test(text||''))return null;
+ try{const ac=new AbortController(),timer=setTimeout(()=>ac.abort(),2500);try{const r=await fetch('/status',{cache:'no-store',signal:ac.signal});if(r.ok){const data=await r.json();render(data);}}finally{clearTimeout(timer);}}catch(e){}
+ return localDeviceAnswer(text)||'I could not get a current reading from the device sensors. Check the sensor wiring and power.';}
 
 /* ---------- Speech output ---------- */
 function estMs(t){const w=(t||'').trim().split(/\s+/).filter(Boolean).length;return Math.max(1400,Math.min(9000,650+w*420));}
 function speechTag(){if(voiceLanguage==='hi-IN'||voiceLanguage==='en-IN')return voiceLanguage;return (navigator.language||'en-IN').toLowerCase().startsWith('hi')?'hi-IN':'en-IN';}
-function settle(){if(busy)setState('thinking');else setState(wantListen?'listening':'idle');resumeRec();}
+function settle(){if(busy)setState('thinking');else setState(wantListen?'listening':'idle');resumeRec();const a=br('isHandsFreeActive');if(a&&a.isHandsFreeActive()){const b=br('resumeHandsFree');if(b)try{b.resumeHandsFree();}catch(e){}}}
 function speakDone(){if(!speaking)return;speaking=false;settle();}
-function speak(t){
+function speak(t,audioData){
  if(!t||!voiceOn){settle();return;}
  const tok=++spTok;speaking=true;setState('speaking');pauseRec();
+  if(audioData){playNeuralAudio(t,audioData,tok);return;}
  const b=br('speakLocalized')||br('speak');
  if(b){try{if(typeof b.speakLocalized==='function')b.speakLocalized(t,speechTag());else b.speak(t);}catch(e){}setTimeout(()=>{if(tok===spTok)speakDone();},estMs(t));return;}
  if(!('speechSynthesis' in window)){speakDone();return;}
@@ -483,6 +525,13 @@ function speak(t){
   u.onend=u.onerror=()=>{if(tok===spTok)speakDone();};u.onboundary=()=>Orb.pulse();
   window.speechSynthesis.speak(u);}
  catch(e){speakDone();}}
+function playNeuralAudio(text,audioData,tok){try{if(activeAudio){activeAudio.pause();activeAudio=null;}
+ const data=typeof audioData==='string'?audioData:audioData.data,mime=typeof audioData==='string'?'audio/wav':(audioData.mimeType||'audio/wav');
+ if(!data)throw new Error('No audio');const player=new Audio('data:'+mime+';base64,'+data);activeAudio=player;player.onended=()=>{if(tok===spTok){activeAudio=null;speakDone();}};
+ player.onerror=()=>{if(tok===spTok){activeAudio=null;speakFallback(text,tok);}};const p=player.play();if(p&&p.catch)p.catch(()=>{if(tok===spTok){activeAudio=null;speakFallback(text,tok);}});
+ }catch(e){speakFallback(text,tok);}}
+function speakFallback(text,tok){const b=br('speakLocalized')||br('speak');if(b){try{if(typeof b.speakLocalized==='function')b.speakLocalized(text,speechTag());else b.speak(text);setTimeout(()=>{if(tok===spTok)speakDone();},estMs(text));return;}catch(e){}}
+ if(!('speechSynthesis'in window)){speakDone();return;}try{window.speechSynthesis.cancel();const tag=speechTag(),language=tag.slice(0,2).toLowerCase(),u=new SpeechSynthesisUtterance(text),v=window.speechSynthesis.getVoices();u.lang=tag;const bv=v.find(a=>a.lang.toLowerCase()===tag.toLowerCase())||v.find(a=>a.lang.toLowerCase().startsWith(language+'-'))||null;if(bv)u.voice=bv;u.rate=.96;u.pitch=.92;u.onend=u.onerror=()=>{if(tok===spTok)speakDone();};window.speechSynthesis.speak(u);}catch(e){speakDone();}}
 
 /* ---------- Speech input ---------- */
 function micMsg(m){log(m);toast(m);}
@@ -512,11 +561,12 @@ function awaken(){awake=true;setState('listening');log('Awake. Waiting for your 
  awT=setTimeout(()=>{if(awake){awake=false;log('Back to standby (silence).');if(!busy&&!speaking)settle();}},6000);}
 function sleepAwake(){awake=false;clearTimeout(awT);}
 function startListening(quiet){
- if(!SR){micMsg('Speech recognition isn’t supported in this browser. Try Chrome or Edge, or type your request.');return;}
- alertClear('mic');wantListen=true;recFail=0;ensureRec();$('mic').setAttribute('aria-pressed','true');$('mic').setAttribute('aria-label','Stop voice listening');$('mic').title='Starting microphone…';
- if(!window.isSecureContext&&!br('isNativeReady'))log('This page is plain HTTP. Chrome may show the mic control as active while blocking speech input; use a secure HTTPS page for reliable microphone access.');
+ const native=br('listenOnce');if(!native&&!SR){micMsg('Speech recognition isn’t supported here. Open ALFRED in its Android app or type your request.');return;}
+ alertClear('mic');wantListen=true;recFail=0;$('mic').setAttribute('aria-pressed','true');$('mic').setAttribute('aria-label','Stop voice listening');$('mic').title='Starting microphone…';
+ if(native){nativeTapPending=true;try{native.listenOnce();}catch(e){nativeTapPending=false;wantListen=false;micMsg('Could not start voice input. Check microphone permission and try again.');}return;}
+ ensureRec();if(!window.isSecureContext)log('This page is plain HTTP. The browser may block microphone access; use a secure HTTPS page for reliable microphone access.');
  if(!greeted&&!quiet){greeted=true;speak('ALFRED online. How can I help?');}else{settle();}}
-function stopListening(){wantListen=false;sleepAwake();pauseRec();$('mic').setAttribute('aria-pressed','false');$('mic').setAttribute('aria-label','Start voice listening');$('mic').title='Tap to start listening; tap again to stop';settle();}
+function stopListening(){wantListen=false;sleepAwake();pauseRec();if(nativeTapPending){nativeTapPending=false;const b=br('stopListenOnce');if(b)try{b.stopListenOnce();}catch(e){}}$('mic').setAttribute('aria-pressed','false');$('mic').setAttribute('aria-label','Start voice listening');$('mic').title='Tap to start listening; tap again to stop';settle();}
 function awakenNow(){if(busy||speaking)return;if(!wantListen){greeted=true;startListening(true);}if(wantListen)awaken();}
 
 /* ---------- Gemini ---------- */
@@ -536,21 +586,24 @@ async function cloudFetch(path,body){
  }
  if(!session||!session.access_token)throw new Error('Sign in to your ALFRED cloud account first.');
  const r=await fetch(c.url+'/functions/v1/alfred-assistant',{method:'POST',headers:{apikey:c.anon,Authorization:'Bearer '+session.access_token,'Content-Type':'application/json'},body:JSON.stringify(body)});
- const d=await r.json().catch(()=>({}));if(!r.ok)throw new Error(d.error||('Cloud request failed ('+r.status+').'));return d;
+ const d=await r.json().catch(()=>({}));if(!r.ok){let message=d.error||('Cloud request failed ('+r.status+').');
+  if(body&&body.googleSearch===true&&r.status===502)message+=' If this Gemini API project is on the Free tier, Google Search grounding is unavailable. Turn off Google Search for normal chat or use an eligible paid-tier project.';
+  throw new Error(message);}return d;
 }
 async function cloudGem(contents,sys,searchNow){
- const d=await cloudFetch('alfred-assistant',{action:'chat',contents:contents,systemInstruction:sys,apiKeys:keys,model:model,googleSearch:searchNow,remember:/^\s*(please\s+)?(remember|save to memory|don.t forget)\b/i.test((contents[contents.length-1].parts||[]).map(p=>p.text||'').join(''))});
- return{ok:!!d.text,rotate:false,text:d.text||'',sources:d.sources||[],msg:d.error||''};
+ try{const d=await cloudFetch('alfred-assistant',{action:'chat',contents:contents,systemInstruction:sys,apiKeys:keys,model:model,googleSearch:searchNow,speech:false,speechLanguage:speechTag(),remember:/^\s*(please\s+)?(remember|save to memory|don.t forget)\b/i.test((contents[contents.length-1].parts||[]).map(p=>p.text||'').join(''))});
+  return{ok:!!d.text,rotate:false,text:d.text||'',sources:d.sources||[],audio:d.audio?{data:d.audio,mimeType:d.audioMimeType||'audio/wav'}:null,msg:d.error||''};
+ }catch(e){if(!searchNow)throw e;const query=(contents[contents.length-1].parts||[]).map(p=>p.text||'').join(' ').trim();return{ok:true,rotate:false,text:'I could not fetch a verified live-search summary. Open these live results instead.',sources:[{title:'Open Google Search results for “'+query.slice(0,100)+'”',url:'https://www.google.com/search?q='+encodeURIComponent(query)}],audio:null,msg:''};}
 }
 async function gem(key,contents,sys,searchNow){
- const ac=new AbortController(),to=setTimeout(()=>ac.abort(),25000);
+ const ac=new AbortController(),to=setTimeout(()=>ac.abort(),searchNow?12000:18000);
  try{const r=await fetch(API+model+':generateContent',{method:'POST',headers:{'Content-Type':'application/json','x-goog-api-key':key},signal:ac.signal,
    body:JSON.stringify(Object.assign({contents:contents,systemInstruction:{parts:[{text:sys}]}},searchNow?{tools:[{google_search:{}}]}:{}))});
   let d=null;try{d=await r.json();}catch(e){}
   if(!r.ok||(d&&d.error)){const er=(d&&d.error)||{},m=String(er.message||('HTTP '+r.status)).split(key).join('***').slice(0,240);
    const hint=r.status===429?' Keys from the same Google project share one quota, so new keys do not reset it. Try the Flash-Lite model, turn off Google Search, or wait.':((r.status===401||r.status===403)?' (Check this is a Gemini API key from AI Studio; if it keeps failing, create a new key.)':'');
    const searchHint=searchNow&&(r.status===400||r.status===403)?' Google Search grounding was rejected. Check that this Gemini project and model are eligible for Search grounding; Google currently lists it as unavailable on the Gemini API Free tier.':'';
-   return{ok:false,rotate:r.status===429||r.status===401||r.status===403||/API key/i.test(m)||er.status==='RESOURCE_EXHAUSTED',msg:m+hint+searchHint};}
+   return{ok:false,rotate:r.status===401||(/API key/i.test(m)&&r.status!==429),msg:m+hint+searchHint};}
   const cd=d&&d.candidates&&d.candidates[0],ps=cd&&cd.content&&cd.content.parts;
   const t=ps?ps.map(p=>p.text||'').join('').trim():'';
   if(!t){const why=(cd&&cd.finishReason)||(d&&d.promptFeedback&&d.promptFeedback.blockReason)||'';return{ok:false,rotate:false,msg:'Empty or blocked response'+(why?' ('+why+')':'')+'.'};}
@@ -558,10 +611,25 @@ async function gem(key,contents,sys,searchNow){
  catch(e){return{ok:false,rotate:false,msg:e.name==='AbortError'?'Timed out waiting for Gemini.':'Network error. Is this device connected to the internet?'};}
  finally{clearTimeout(to);}}
 function fail(text,msg){busy=false;caption(text,'Request failed: '+msg);log('Gemini error: '+msg);toast(msg);settle();}
+function searchFallback(text){const q=String(text||'').trim();const url='https://www.google.com/search?q='+encodeURIComponent(q);const message='Gemini could not complete the AI search. Open the live search results below.';caption(q,message);renderSources([{title:'Open Google Search results for “'+q.slice(0,100)+'”',url:url}]);log('ALFRED: '+message);busy=false;speak(message);}
+async function synthesizeWithKey(key,text){if(!key||!text)return null;const ac=new AbortController(),to=setTimeout(()=>ac.abort(),18000);
+ try{const hi=/hi-IN/.test(speechTag())||/[\u0900-\u097f]/.test(text);const style=hi?'Speak in clear, natural Hindi with a warm, calm, confident conversational delivery. Use an unhurried pace and crisp pronunciation.':'Speak in clear, natural Indian English with a warm, calm, confident conversational delivery. Use an unhurried pace and crisp pronunciation.';
+  const r=await fetch('https://generativelanguage.googleapis.com/v1beta/interactions',{method:'POST',signal:ac.signal,headers:{'Content-Type':'application/json','x-goog-api-key':key},body:JSON.stringify({model:'gemini-3.8-flash-lite-tts',input:[{type:'user_input',content:[{type:'text',text:text.slice(0,1400),annotations:[{type:'speech_metadata',style:style}]}]}],response_format:{type:'audio'},generation_config:{speech_config:[{voice:'Orus'}]}})});
+  const d=await r.json().catch(()=>({}));if(!r.ok)return null;const a=d.output_audio||d.interaction?.output_audio||{};return a.data?{data:a.data,mimeType:a.mime_type||a.mimeType||'audio/wav'}:null;
+ }catch(e){return null;}finally{clearTimeout(to);}}
+async function synthesizeLocal(text){if(!neuralVoice||!voiceOn||!keys.length)return null;
+ for(let n=0;n<Math.min(keys.length,3);n++){const index=(ki+n)%keys.length,key=keys[index],a=await synthesizeWithKey(key,text);if(a){ki=index;return a;}}return null;}
 async function ask(text,forceVis){
  text=(text||'').trim().slice(0,500);if(!text)return;
  if(busy){toast('ALFRED is still working on the previous request.');return;}
  if(!forceVis&&asksForCodeTask(text)){confirmCodeTask(text);return;}
+ if(!forceVis){
+  const lower=text.toLowerCase();
+  if(/\b(where am i|where is my (?:current )?location|what is my (?:current )?location|my (?:current )?location|my coordinates|gps location)\b/i.test(text)){const locationBridge=br('getCurrentLocation');if(locationBridge){pendingLocationPrompt=text;caption(text,'Getting your phone location…');log('Requesting a current phone location.');try{locationBridge.getCurrentLocation();}catch(e){window.alfredNativeLocationError('Could not request location. Check ALFRED’s location permission.');}}else{const msg='Current phone location is available in the ALFRED Android app.';caption(text,msg);speak(msg);}return;}
+  const immediateAction=infer(text);if(immediateAction){const openMatch=text.match(/^(?:please\s+)?(?:open|launch|start|switch to)\s+(?:the\s+)?(.+?)(?:\s+app)?[.!?]*$/i);const target=openMatch?openMatch[1].trim():'your request';const msg=immediateAction==='music'?'Opening the requested music app. Check the app to confirm playback.':immediateAction==='app'?'Trying to open '+target+'. Check your phone to see whether it launched.':immediateAction==='missing-track'?'Which song should I play?': 'Opening the requested destination in Maps. Check Maps to confirm it opened.';caption(text,msg);log('ALFRED: '+msg);speak(msg);return;}
+  const sensorReply=await refreshSensorAnswer(text);if(sensorReply){caption(text,sensorReply);log('ALFRED: '+sensorReply);speak(sensorReply);return;}
+  if(/\b(who|what)\s+(?:created|made|built)\s+(?:you|alfred)\b|\bcreator of (?:you|alfred)\b/i.test(text)){const msg='I was created by SVJ Labs. Gemini is one of the AI models I can use.';caption(text,msg);log('ALFRED: '+msg);speak(msg);return;}
+ }
  if(!keys.length&&!cloudReady()){toast('Connect the cloud assistant or add a Gemini API key in Settings.');go('settings');return;}
  busy=true;const id=++reqId;sleepAwake();pauseRec();setState('thinking');caption(text,'');renderSources([]);let sources=[];
  try{
@@ -573,33 +641,37 @@ async function ask(text,forceVis){
   const liveInfo=wantsLiveInfo(text),searchNow=useSearch&&liveInfo;
   if(searchNow)log('Searching the web for current information…');
   else if(liveInfo&&!useSearch)log('Live search is off. Enable “Allow Google Search for current questions” in Settings.');
-  let sys='You are ALFRED, a calm, observant and capable assistant with a warm, natural voice. Today is '+new Date().toLocaleDateString(navigator.language||undefined)+'. Reply in '+answerLanguage+' unless the user explicitly asks for another language. Be concise by default, acknowledge naturally, and ask one short clarifying question only when needed. Use saved personal details only when relevant. Be honest about uncertainty and do not claim actions you have not completed.\nRoom: '+(last.temperature!=null?last.temperature.toFixed(1)+' °C':'unknown')+', Range: '+(last.distance!=null?Math.round(last.distance)+' cm':'unknown')+'.\nFor explicit music requests append exactly [INTENT:PLAY,data:TRACK].\nFor explicit maps/driving requests append exactly [INTENT:NAV,data:DESTINATION].\nFor explicit calls append exactly [INTENT:CALL,data:PHONE].\nFor explicit SMS append exactly [INTENT:SMS,data:PHONE,body:MESSAGE]. Never invent a phone number. ALFRED is not a navigation safety device.';
+  let sys='You are ALFRED, a calm, observant and capable assistant with a warm, natural voice. ALFRED was created by SVJ Labs; Gemini is an AI model provider, not ALFRED’s creator. Today is '+new Date().toLocaleDateString(navigator.language||undefined)+'. Reply in '+answerLanguage+' unless the user explicitly asks for another language. Be concise by default, acknowledge naturally, and ask one short clarifying question only when needed. Use saved personal details only when relevant. Be honest about uncertainty and do not claim actions you have not completed.\nLive device sensors: Temperature '+(last.temperature!=null?last.temperature.toFixed(1)+' °C':'unavailable')+', humidity '+(last.humidity!=null?Math.round(last.humidity)+'%':'unavailable')+', HC-SR04 distance '+(last.distance!=null?Math.round(last.distance)+' cm':'unavailable')+', flame sensor '+(typeof last.flame==='boolean'?(last.flame?'triggered':'clear'):'unavailable')+'. Answer sensor questions from these readings and never claim the sensors are inaccessible when a reading is present.\nCurrent music app selection: '+$('musicApp').value+'. For an explicit request to play music, append [INTENT:PLAY,data:TRACK,app:APP] where APP is spotify, ytmusic, or any; honor a named app, and otherwise use the selected app.\nFor explicit maps/driving requests append exactly [INTENT:NAV,data:DESTINATION].\nFor an explicit request to call a person by name, append [INTENT:CALL_CONTACT,data:NAME]. For a request to call a provided phone number append [INTENT:CALL,data:PHONE]. Never invent a number or contact name.\nFor explicit SMS append exactly [INTENT:SMS,data:PHONE,body:MESSAGE]. Never send without user confirmation.\nOnly say an action is complete after the app confirms it. Calls and texts require the user to approve and finish Android UI; a text is never sent by ALFRED itself. Maps opens directions but cannot confirm navigation started. Music playback cannot be verified by ALFRED. Reminders and general computer/app control are unavailable in this build; say so clearly instead of claiming they were done. ALFRED is not a navigation safety device.';
   if(searchNow)sys+='\nUse live web search for this answer. Distinguish sourced facts from uncertainty and do not invent sources.';
   else if(liveInfo)sys+='\nLive web search is not enabled for this request. Do not claim to have searched or verified current facts; say that you cannot confirm live information and ask the user to enable Google Search in Settings.';
   const contents=hist.concat([{role:'user',parts:parts}]);
-  let out=null,err='';
+  let out=null,err='',audio=null;
   if(cloudReady()){
    const r=await cloudGem(contents,sys,searchNow);if(id!==reqId)return;
-   if(r.ok){out=r.text;sources=r.sources||[];}else err=r.msg;
+   if(r.ok){out=r.text;sources=r.sources||[];audio=r.audio||null;}else err=r.msg;
   }else for(let n=0;n<keys.length;n++){
    const r=await gem(keys[ki],contents,sys,searchNow);if(id!==reqId)return;
    if(r.ok){out=r.text;sources=r.sources||[];break;}
    err=r.msg;
    if(r.rotate&&keys.length>1){log('Key #'+(ki+1)+' was rejected or rate-limited. Switching key.');ki=(ki+1)%keys.length;continue;}
    break;}
-  if(out===null){fail(text,err||'No response.');return;}
-  const reply=out.replace(/[*#`]/g,'');let x,did=false;
-  if((x=reply.match(/\[INTENT:NAV,data:(.*?)\]/))){$('navDest').value=x[1].trim().slice(0,120);setTimeout(doNav,1500);did=true;}
-  if((x=reply.match(/\[INTENT:PLAY,data:(.*?)\]/))){$('musicTrack').value=x[1].trim().slice(0,120);setTimeout(doMusic,1500);did=true;}
-  if((x=reply.match(/\[INTENT:CALL,data:(.*?)\]/))){confirmAct('call',x[1].trim());did=true;}
-  if((x=reply.match(/\[INTENT:SMS,data:(.*?),body:(.*?)\]/))){confirmAct('sms',x[1].trim(),x[2].trim());did=true;}
-  if(!did)infer(text);
-  const spoken=reply.replace(/\[INTENT:[^\]]*\]/g,'').trim();
+  if(out===null){if(searchNow){searchFallback(text);return;}fail(text,err||'No response.');return;}
+  const reply=out.replace(/[*#`]/g,'');let x,did=false,musicRequest=null,actionStatus='';
+  if((x=reply.match(/\[INTENT:NAV,data:(.*?)\]/))){$('navDest').value=x[1].trim().slice(0,120);setTimeout(doNav,1500);actionStatus='Opening Maps directions to '+$('navDest').value+'. Check Maps to confirm it opened.';did=true;}
+  if((x=reply.match(/\[INTENT:PLAY,data:([^,\]]+)(?:,app:(spotify|ytmusic|any))?\]/i))){musicRequest={track:x[1].trim(),app:(x[2]||$('musicApp').value||'any').toLowerCase()};setTimeout(()=>doMusic(musicRequest.track,musicRequest.app),1100);actionStatus='Sent a play request for '+musicRequest.track+' to '+(musicRequest.app==='spotify'?'Spotify':musicRequest.app==='ytmusic'?'YouTube Music':'your selected music app')+'. I cannot confirm playback.';did=true;}
+  if((x=reply.match(/\[INTENT:CALL_CONTACT,data:([^\]]+)\]/i))){confirmAct('contact',x[1].trim());actionStatus='Please confirm opening contacts, then choose the person. Android will ask again before calling.';did=true;}
+  if((x=reply.match(/\[INTENT:CALL,data:(.*?)\]/))){confirmAct('call',x[1].trim());actionStatus='I need your confirmation before asking Android to place this call.';did=true;}
+  if((x=reply.match(/\[INTENT:SMS,data:(.*?),body:(.*?)\]/))){confirmAct('sms',x[1].trim(),x[2].trim());actionStatus='I prepared this text for review. Confirm to open Messages, then review and tap Send there.';did=true;}
+  const inferred=!did?infer(text):false;
+  if(inferred)actionStatus='I started the requested app action. Check the phone to confirm it opened; ALFRED cannot verify completion.';
+  let spoken=reply.replace(/\[INTENT:[^\]]*\]/g,'').trim();
+  if(actionStatus)spoken=actionStatus;
+  if(musicRequest&&!br('playMusic'))spoken='Opening '+(musicRequest.app==='spotify'?'Spotify':'YouTube Music')+' search for '+musicRequest.track+'. Select a result to start playback; this browser cannot confirm playback.';
   hist.push({role:'user',parts:[{text:text}]},{role:'model',parts:[{text:reply}]});
   hist=hist.slice(-6);while(hist.length&&hist[0].role!=='user')hist.shift();
   caption(text,spoken||'Done.');renderSources(sources);log('ALFRED: '+spoken);
-  busy=false;speak(spoken);
- }catch(e){if(id===reqId)fail(text,'Unexpected error.');}
+  busy=false;speak(spoken,audio);
+ }catch(e){if(id===reqId){const message=e&&typeof e.message==='string'&&e.message.trim()?e.message:'Unexpected error.';fail(text,message);}}
  finally{if(id===reqId&&busy){busy=false;settle();}}}
 
 /* ---------- Network setup ---------- */
@@ -691,7 +763,9 @@ $('mic').addEventListener('click',()=>{if(wantListen)stopListening();else startL
 $('orbBox').addEventListener('click',awakenNow);
 $('orbBox').addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();awakenNow();}});
 $('bMusic').addEventListener('click',doMusic);$('bNav').addEventListener('click',doNav);
-$('bCall').addEventListener('click',doCall);$('bSms').addEventListener('click',doSms);
+$('bCall').addEventListener('click',doCall);$('bSms').addEventListener('click',doSms);$('bContact').addEventListener('click',chooseContact);
+$('handsFreeBtn').addEventListener('click',()=>{const b=br('setHandsFree');if(!b){toast('Hands-free listening requires the ALFRED Android app.');return;}
+ try{if(b.isHandsFreeActive())b.setHandsFree(false);else{stopListening();b.setHandsFree(true);}}catch(e){toast('Could not change hands-free listening. Check microphone permission.');}});
 $('cfOk').addEventListener('click',()=>{const a=cfAct;cfClose();if(a)a();});$('cfNo').addEventListener('click',cfClose);
 $('codexRun').addEventListener('click',()=>confirmCodeTask($('codexTask').value));$('codexApply').addEventListener('click',codexApply);$('codexDiscard').addEventListener('click',codexDiscard);
 $('visBtn').addEventListener('click',()=>{go('assistant');ask('Describe the current camera image briefly. Mention only details that are clearly visible and state uncertainty.',true);});
@@ -707,13 +781,13 @@ $('cloudSignOut').addEventListener('click',()=>{ls.d('alfred_sb_session');cloudU
 $('memoryReview').addEventListener('click',memoryReview);$('memoryClear').addEventListener('click',memoryClear);
 $('sbUrl').addEventListener('change',saveCloudConfig);$('sbAnon').addEventListener('change',saveCloudConfig);
 $('voiceChk').addEventListener('change',e=>{voiceOn=e.target.checked;ls.s('alfred_voice',voiceOn?'1':'0');if(!voiceOn){try{window.speechSynthesis.cancel();}catch(x){}}});
-$('voiceLanguage').addEventListener('change',e=>{voiceLanguage=e.target.value;ls.s('alfred_voice_language',voiceLanguage);if(rec){pauseRec();rec.lang=speechTag();if(wantListen)resumeRec();}log('Voice language: '+(voiceLanguage==='hi-IN'?'Hindi':voiceLanguage==='auto'?'device language':'English (India)'));});
+$('voiceLanguage').addEventListener('change',e=>{voiceLanguage=e.target.value;ls.s('alfred_voice_language',voiceLanguage);const b=br('setVoiceLanguage');if(b)b.setVoiceLanguage(voiceLanguage);if(rec){pauseRec();rec.lang=speechTag();if(wantListen)resumeRec();}log('Voice language: '+(voiceLanguage==='hi-IN'?'Hindi':voiceLanguage==='auto'?'device language':'English (India)'));});
 $('srchChk').addEventListener('change',e=>{useSearch=e.target.checked;ls.s('alfred_search',useSearch?'1':'0');});
 $('modelSel').addEventListener('change',e=>{model=e.target.value;ls.s('alfred_model',model);log('Model: '+model);});
 $('visChk').addEventListener('change',e=>{autoVis=e.target.checked;ls.s('alfred_autovis',autoVis?'1':'0');});
 document.addEventListener('visibilitychange',()=>{if(!document.hidden){clearTimeout(pollT);poll();if(wantListen&&!speaking&&!busy)resumeRec();}});
 
-voiceOn=ls.g('alfred_voice')!=='0';autoVis=ls.g('alfred_autovis')!=='0';voiceLanguage=['en-IN','hi-IN','auto'].includes(ls.g('alfred_voice_language'))?ls.g('alfred_voice_language'):'auto';$('voiceChk').checked=voiceOn;$('visChk').checked=autoVis;$('voiceLanguage').value=voiceLanguage;useSearch=ls.g('alfred_search')!=='0';$('srchChk').checked=useSearch;{const m=ls.g('alfred_model');if(MODELS.indexOf(m)>=0)model=m;}$('modelSel').value=model;
+voiceOn=ls.g('alfred_voice')!=='0';neuralVoice=false;autoVis=ls.g('alfred_autovis')!=='0';voiceLanguage=['en-IN','hi-IN','auto'].includes(ls.g('alfred_voice_language'))?ls.g('alfred_voice_language'):'auto';$('voiceChk').checked=voiceOn;$('neuralVoiceChk').checked=true;$('visChk').checked=autoVis;$('voiceLanguage').value=voiceLanguage;const voiceBridge=br('setVoiceLanguage');if(voiceBridge)voiceBridge.setVoiceLanguage(voiceLanguage);useSearch=ls.g('alfred_search')!=='0';$('srchChk').checked=useSearch;{const m=ls.g('alfred_model');if(MODELS.indexOf(m)>=0)model=m;}$('modelSel').value=model;
 const saved=ls.g('alfred_secure_pool');if(saved){const r=parseKeys(saved);if(r.k){keys=r.k;log('Loaded saved key(s) from this browser.');}}
 keysUI();cloudUI();poll();codexProbe();
 })();

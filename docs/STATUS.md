@@ -13,7 +13,7 @@
 - Firmware v2.5 compiled successfully with Arduino CLI and ESP32 core 3.3.10 (1,166,365 bytes program, 62,040 bytes RAM), then was flashed and its application hash verified. Normal startup, camera, Wi-Fi and sensors still need hardware verification.
 - Supabase dashboard confirmed the Edge Function deployment. Live search, Gemini summarization, memory and spoken playback have not been exercised end-to-end from a signed-in device.
 - An earlier v2.4 hardware check showed repeated camera `cam_hal: FB-OVF` warnings; the known `/status` IP and `alfred.local` were unreachable from this computer. Recheck camera and Wi-Fi on v2.5.
-- The final source and dated project log are being recorded in the private ALFRED GitHub repository alongside this local checkout. Build artifacts and credentials are excluded.
+- The final source and dated project log are published in the private ALFRED GitHub repository on `main`. Build artifacts and credentials are excluded.
 
 ## Implemented in source
 

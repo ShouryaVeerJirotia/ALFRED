@@ -44,3 +44,8 @@ This log records the dated implementation and verification state of the ALFRED p
 - Supabase Edge Function and schema migration: `backend/supabase/`.
 - Desktop Codex bridge: `desktop/`.
 - Current concise status and open checks: `STATUS.md` and `TEST_CHECKLIST.md` in this directory.
+
+## 2026-11-08 — GitHub publication
+
+- Published the final source tree, firmware v2.5, dated documentation, and downloadable source archive to the private `ShouryaVeerJirotia/ALFRED` repository on `main`.
+- GitHub confirmed the branch update. The fetched README, project log, and firmware blobs match this local checkout; the archive is `ALFRED_Source_2026-11-08_release2.zip`.
